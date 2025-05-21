@@ -1,9 +1,12 @@
 fastapi
 uvicorn
 pymongo
-pandas
 jinja2
-email-validator
-itsdangerous
-passlib[bcrypt]
+passlib
 python-multipart
+email-validator
+pandas
+itsdangerous
+authlib
+python-dotenv
+httpx

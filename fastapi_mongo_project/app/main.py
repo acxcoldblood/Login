@@ -7,26 +7,23 @@ from pydantic import BaseModel, EmailStr
 from pymongo import MongoClient
 from passlib.context import CryptContext
 from datetime import datetime
+from authlib.integrations.starlette_client import OAuth
+from dotenv import load_dotenv
 import pandas as pd
 import os
 
+# Load .env variables
+load_dotenv()
+
+# Initialize app
 app = FastAPI(
     title="User Profile API",
-    description="🚀 FastAPI + MongoDB CRUD App with Mongo Login & Tailwind UI",
+    description="🚀 FastAPI + MongoDB CRUD App with Mongo Login & Google OAuth",
     version="3.0.0"
 )
 
-# MongoDB connection
-client = MongoClient(
-    f"mongodb://{os.environ.get('USER_NAME')}:{os.environ.get('USER_PWD')}@{os.environ.get('DB_URL')}:27017"
-)
-db = client["demo"]
-users_collection = db["users"]
-
-# Enable session support
-app.add_middleware(SessionMiddleware, secret_key="your-super-secret-key")
-
-# CORS (optional)
+# Middleware
+app.add_middleware(SessionMiddleware, secret_key=os.getenv("SECRET_KEY", "supersecret"))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -35,19 +32,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# OAuth config
+oauth = OAuth()
+oauth.register(
+    name='google',
+    client_id=os.getenv("GOOGLE_CLIENT_ID"),
+    client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
+    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+    client_kwargs={"scope": "openid email profile"}
+)
+
+# MongoDB setup
+client = MongoClient(
+    f"mongodb://{os.environ.get('USER_NAME')}:{os.environ.get('USER_PWD')}@{os.environ.get('DB_URL')}"
+)
+db = client["demo"]
+users_collection = db["users"]
+
 # Templates
 templates = Jinja2Templates(directory="app/templates")
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 def hash_password(password: str):
     return pwd_context.hash(password)
-
 def verify_password(plain_password: str, hashed_password: str):
     return pwd_context.verify(plain_password, hashed_password)
 
-# Pydantic user model
+# Pydantic model
 class User(BaseModel):
     name: str
     email: EmailStr
@@ -126,3 +138,40 @@ def export_users():
         media_type="text/csv",
         filename="users.csv"
     )
+
+# 🔑 Google Sign-In
+@app.get("/auth/google")
+async def login_google(request: Request):
+    redirect_uri = str(request.url_for('auth'))
+    return await oauth.google.authorize_redirect(request, redirect_uri)
+
+@app.get("/auth")
+async def auth(request: Request):
+    try:
+        token = await oauth.google.authorize_access_token(request)
+
+        # Correct way to get user info
+        resp = await oauth.google.get("userinfo", token=token)
+        user = resp.json()
+
+        # Validate
+        email = user.get("email")
+        if not email:
+            return HTMLResponse("❌ Google login failed: email not found.", status_code=400)
+
+        request.session["user"] = email
+
+        # Auto-create user if not exists
+        if not users_collection.find_one({"email": email}):
+            users_collection.insert_one({
+                "email": email,
+                "password": None,
+                "created_at": datetime.utcnow(),
+                "google": True
+            })
+
+        return RedirectResponse(url="/", status_code=303)
+
+    except Exception as e:
+        print("Google login error:", str(e))
+        return HTMLResponse("❌ Login failed", status_code=500)
