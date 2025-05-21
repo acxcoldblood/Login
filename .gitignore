@@ -8,3 +8,4 @@ Thumbs.db
 .idea/  
 .ipynb_checkpoints/  
 /app/exports/ 
+".env" 
